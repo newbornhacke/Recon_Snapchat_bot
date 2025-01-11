@@ -1,8 +1,9 @@
-import sqlite3
+import psycopg2
+from psycopg2 import sql
 import requests
 import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ConversationHandler, ContextTypes, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import os
 import random
 
@@ -12,23 +13,34 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "7105963496:AAGKKFdjMEC1ZlrhcirxnfFau9NzoxNmu
 BTC_ADDRESS = "1P8uUSDniB4Dc9YfPzX3wHp5BZwg6cJMiU"
 USDT_ADDRESS = "TPcbm4bMSm4nJDu65Skg4QF7xNFNWfUzqts"
 
-# SQLite database setup
+# Environment variables for PostgreSQL
+DB_NAME = os.getenv("DB_NAME", "defaultdb")
+DB_USER = os.getenv("DB_USER", "avnadmin")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "AVNS_A2x1JVLOgr6nqo2_heU")
+DB_HOST = os.getenv("DB_HOST", "pg-3092de5c-trackingid963-35cd.g.aivencloud.com")
+DB_PORT = os.getenv("DB_PORT", "11893")
+
+# PostgreSQL database setup
 def init_db():
-    conn = sqlite3.connect("users.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        tokens INTEGER DEFAULT 0
-    )""")
-    conn.commit()
-    conn.close()
+    try:
+        conn = psycopg2.connect(
+            dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT
+        )
+        cursor = conn.cursor()
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id BIGINT PRIMARY KEY,
+            tokens INTEGER DEFAULT 0
+        )
+        """)
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"Error initializing database: {e}")
 
 # Initialize database
 init_db()
-
-# Define stages in the conversation
-ASK_USERNAME, VALIDATE_PAYMENT = range(2)
 
 # Snapchat username validation class
 class SnapUsernameValidator:
@@ -48,22 +60,38 @@ class SnapUsernameValidator:
         except requests.exceptions.RequestException as e:
             return False, f"An error occurred: {e}"
 
-# Helper functions for SQLite operations
+# Helper functions for PostgreSQL operations
 def get_user_tokens(user_id):
-    conn = sqlite3.connect("users.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT tokens FROM users WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result else 0
+    try:
+        conn = psycopg2.connect(
+            dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT
+        )
+        cursor = conn.cursor()
+        cursor.execute("SELECT tokens FROM users WHERE user_id = %s", (user_id,))
+        result = cursor.fetchone()
+        conn.close()
+        return result[0] if result else 0
+    except Exception as e:
+        print(f"Error fetching user tokens: {e}")
+        return 0
 
 def update_user_tokens(user_id, tokens):
-    conn = sqlite3.connect("users.db")
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, tokens) VALUES (?, 0)", (user_id,))
-    cursor.execute("UPDATE users SET tokens = ? WHERE user_id = ?", (tokens, user_id))
-    conn.commit()
-    conn.close()
+    try:
+        conn = psycopg2.connect(
+            dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT
+        )
+        cursor = conn.cursor()
+        tokens = max(tokens, 0)  # Ensure tokens are never negative
+        cursor.execute("""
+        INSERT INTO users (user_id, tokens) 
+        VALUES (%s, %s)
+        ON CONFLICT (user_id) DO UPDATE SET tokens = EXCLUDED.tokens
+        """, (user_id, tokens))
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"Error updating user tokens: {e}")
 
 # Generate keyboards
 def get_main_menu_keyboard():
@@ -98,24 +126,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Welcome! You have no tokens. Please make a payment to purchase tokens.",
         reply_markup=get_main_menu_keyboard()
     )
-    return ConversationHandler.END
 
-# Handle payment validation
-async def receive_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Handle payment after "Make Payment" button
+async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get('waiting_for_payment', False):
+        return
+
     user_id = update.message.chat_id
     if not update.message.photo:
-        await update.message.reply_text("Please upload a valid image.")
+        await update.message.reply_text("Please upload a valid payment screenshot.")
         return
 
     photo = update.message.photo[-1].file_id
     try:
-        await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo, caption=f"Payment screenshot from User ID: {user_id}")
-        await update.message.reply_text("Your payment screenshot has been sent for validation. Please wait.")
+        await context.bot.send_photo(
+            chat_id=ADMIN_ID,
+            photo=photo,
+            caption=f"Payment screenshot received from User ID: {user_id}"
+        )
+        await update.message.reply_text(
+            "Your payment screenshot has been sent for validation. Please wait for confirmation.",
+            reply_markup=get_main_menu_keyboard()
+        )
     except Exception as e:
-        print(f"Error while sending photo: {e}")
-        await update.message.reply_text("An error occurred. Please try again.")
+        print(f"Error while sending photo to admin: {e}")
+        await update.message.reply_text("An error occurred while sending your screenshot. Please try again.")
 
-    return ConversationHandler.END
+    context.user_data['waiting_for_payment'] = False
 
 # Admin validates payment
 async def validate_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -133,21 +170,6 @@ async def validate_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"Error during validation: {e}")
         await update.message.reply_text("Invalid format. Use /validate <user_id> <tokens>.")
-
-# Admin declines payment
-async def decline_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.chat_id != ADMIN_ID:
-        await update.message.reply_text("Access denied. Only the admin can use this command.")
-        return
-
-    try:
-        _, user_id = update.message.text.split()
-        user_id = int(user_id)
-        await context.bot.send_message(chat_id=user_id, text="Your payment has been declined. Please contact support.")
-        await update.message.reply_text(f"Notification sent to User ID: {user_id}.")
-    except Exception as e:
-        print(f"Error during decline: {e}")
-        await update.message.reply_text("Invalid format. Use /decline <user_id>.")
 
 # Callback for menu actions
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -175,10 +197,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "make_payment":
         await query.answer()
-        await query.message.reply_text(
-            f"Please make a payment to the following addresses:\nBTC: {BTC_ADDRESS}\nUSDT: {USDT_ADDRESS}\nThen send a payment screenshot for validation."
-        )
         context.user_data['waiting_for_payment'] = True
+        await query.message.reply_text(
+            f"Please make a payment to the following addresses:\n\n"
+            f"BTC: {BTC_ADDRESS}\nUSDT: {USDT_ADDRESS}\n\n"
+            "After making the payment, upload the payment screenshot here for validation."
+        )
 
     elif query.data == "main_menu":
         await query.answer()
@@ -193,26 +217,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_main_menu_keyboard()
         )
 
-# Handle payment after Make Payment button
-async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('waiting_for_payment', False):
-        return
-
-    user_id = update.message.chat_id
-    if not update.message.photo:
-        await update.message.reply_text("Please upload a valid payment screenshot.")
-        return
-
-    photo = update.message.photo[-1].file_id
-    try:
-        await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo, caption=f"Payment screenshot from User ID: {user_id}")
-        await update.message.reply_text("Your payment screenshot has been sent for validation. Please wait.", reply_markup=get_main_menu_keyboard())
-    except Exception as e:
-        print(f"Error while sending photo: {e}")
-        await update.message.reply_text("An error occurred. Please try again.")
-
-    context.user_data['waiting_for_payment'] = False
-
 # Handle Snapchat username validation
 async def handle_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get('waiting_for_username', False):
@@ -220,17 +224,27 @@ async def handle_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.message.chat_id
     tokens = get_user_tokens(user_id)
-    username = update.message.text
 
+    if tokens <= 0:
+        await update.message.reply_text("You have no tokens remaining. Please purchase more tokens to continue.", reply_markup=get_main_menu_keyboard())
+        return
+
+    username = update.message.text
     validator = SnapUsernameValidator(username)
     valid, message = validator.validate_username()
+
     if valid:
-        update_user_tokens(user_id, tokens - 1)
-        remaining_tokens = get_user_tokens(user_id)
-        await update.message.reply_text(
-            f"{message}\n1 token has been deducted. Remaining tokens: {remaining_tokens}.",
-            reply_markup=get_continue_keyboard()
-        )
+        try:
+            # Deduct one token and update the database
+            update_user_tokens(user_id, tokens - 1)
+            remaining_tokens = get_user_tokens(user_id)
+            await update.message.reply_text(
+                f"{message}\n1 token has been deducted. Remaining tokens: {remaining_tokens}.",
+                reply_markup=get_continue_keyboard()
+            )
+        except Exception as e:
+            print(f"Error deducting tokens: {e}")
+            await update.message.reply_text("An error occurred while deducting your token. Please try again.")
     else:
         await update.message.reply_text(message, reply_markup=get_validate_username_keyboard())
 
@@ -241,20 +255,11 @@ def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
     # Handlers
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            VALIDATE_PAYMENT: [MessageHandler(filters.PHOTO, receive_payment)],
-        },
-        fallbacks=[MessageHandler(filters.ALL, lambda u, c: u.message.reply_text("Invalid command."))],
-    )
-
-    application.add_handler(conv_handler)
+    application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("validate", validate_payment))
-    application.add_handler(CommandHandler("decline", decline_payment))
     application.add_handler(CallbackQueryHandler(button_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_username))
     application.add_handler(MessageHandler(filters.PHOTO, handle_payment))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_username))
 
     application.run_polling()
 
