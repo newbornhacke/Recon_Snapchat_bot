@@ -181,7 +181,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if tokens <= 0:
             await query.answer()
             await query.message.reply_text(
-                f"You have no tokens. Please make a payment to purchase more tokens:\nBTC: {BTC_ADDRESS}\nUSDT: {USDT_ADDRESS}\nThen send a payment screenshot for validation.",
+                f"You have no tokens. Please make a payment of 5$ equivalent to purchase more tokens:\nBTC: {BTC_ADDRESS}\nUSDT: {USDT_ADDRESS}\nThen send a payment screenshot for validation.",
                 reply_markup=get_main_menu_keyboard()
             )
             return
