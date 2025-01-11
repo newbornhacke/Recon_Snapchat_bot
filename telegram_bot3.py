@@ -9,8 +9,8 @@ import random
 # Environment variables for better security
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7848732022"))  # Replace with your admin's Telegram user ID
 BOT_TOKEN = os.getenv("BOT_TOKEN", "7105963496:AAGKKFdjMEC1ZlrhcirxnfFau9NzoxNmu40")  # Replace with your bot token
-BTC_ADDRESS = "your_btc_address"
-USDT_ADDRESS = "your_usdt_address"
+BTC_ADDRESS = "1P8uUSDniB4Dc9YfPzX3wHp5BZwg6cJMiU"
+USDT_ADDRESS = "TPcbm4bMSm4nJDu65Skg4QF7xNFNWfUzqts"
 
 # SQLite database setup
 def init_db():
